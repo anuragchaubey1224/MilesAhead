@@ -1,0 +1,49 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.pyo
+
+# === Virtual Env ===
+venv/
+env/
+
+# === Jupyter Notebooks ===
+.ipynb_checkpoints/
+
+# === IDE/Editor ===
+.vscode/
+.idea/
+
+# === Logs and Outputs ===
+*.log
+outputs/
+logs/
+*.png
+*.jpg
+
+# === Models ===
+*.pkl
+*.h5
+models/
+
+# === Data Files ===
+data/raw/
+data/interim/
+data/processed/
+*.csv
+*.tsv
+*.xlsx
+
+# === Secrets and Env Files ===
+.env
+.flaskenv
+
+# === MacOS System Files ===
+.DS_Store
+
+# === Other Binary Files ===
+*.zip
+*.tar.gz
+*.bak
