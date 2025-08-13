@@ -195,7 +195,7 @@ def run_full_pipeline():
     ])
     
     preprocessing_pipeline_path = os.path.join(MODEL_DIR, 'preprocessing_pipeline.joblib')
-    joblib.dump(preprocessing_pipeline, preprocessing_pipeline_path)
+    joblib.dump(preprocessing_pipeline, preprocessing_pipeline_path,compress=6)
     print(f" preprocessing pipeline saved to: {preprocessing_pipeline_path}")
     print("\n full pipeline executed successfully!")
 
