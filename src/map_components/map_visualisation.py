@@ -28,7 +28,7 @@ def get_real_route_from_osrm(pickup_lon: float, pickup_lat: float,
             route = data['routes'][0]
             return {
                 'distance_km': route['distance'] / 1000,
-                'duration_minutes': route['duration'] / 60,
+                'duration_minutes': route['duration'] / 60, # Keep for internal use if needed, but won't show in popup now
                 'geometry': route['geometry']['coordinates'],
                 'waypoints': data.get('waypoints', [])
             }
@@ -50,7 +50,7 @@ def decode_polyline_to_coordinates(geometry: List[List[float]]) -> List[List[flo
     return [[coord[1], coord[0]] for coord in geometry]
 
 def create_enhanced_popup(row: pd.Series, popup_cols: List[str] = None, 
-                         route_info: Dict[str, Any] = None) -> str:
+                         route_info: Dict[str, Any] = None, predicted_time: Optional[float] = None) -> str:
     """
     create an enhanced popup with route information and custom columns
     """
@@ -63,6 +63,9 @@ def create_enhanced_popup(row: pd.Series, popup_cols: List[str] = None,
                 value = row[col]
                 if isinstance(value, float):
                     if 'time' in col.lower() or 'duration' in col.lower():
+                        # Exclude other 'time' columns if they are not the predicted time
+                        if col != 'Predicted_Delivery_Time':
+                            continue 
                         popup_html += f"<b>{col.title()}:</b> {value:.2f} min<br>"
                     elif 'distance' in col.lower():
                         popup_html += f"<b>{col.title()}:</b> {value:.2f} km<br>"
@@ -76,9 +79,14 @@ def create_enhanced_popup(row: pd.Series, popup_cols: List[str] = None,
     # add route information if available
     if route_info:
         popup_html += "<hr style='margin: 5px 0;'>"
-        popup_html += f"<b>🛣️ Route Distance:</b> {route_info['distance_km']:.2f} km<br>"
-        popup_html += f"<b>⏱️ Estimated Duration:</b> {route_info['duration_minutes']:.1f} min<br>"
+        popup_html += f"<b>🛣️ Route Distance (OSRM):</b> {route_info['distance_km']:.2f} km<br>"
     
+    # Add predicted time from the model explicitly
+    if predicted_time is not None:
+        if route_info: # Add a separator if route info was present
+            popup_html += "<hr style='margin: 5px 0;'>" 
+        popup_html += f"<b>⏱️ Predicted Time (Model):</b> {predicted_time:.1f} min<br>"
+
     popup_html += "</div>"
     return popup_html
 
@@ -214,11 +222,9 @@ def visualize_delivery_routes_on_map(
         # calculate map center based on all coordinates
         all_lats = pd.concat([df[pickup_lat_col], df[delivery_lat_col]]).dropna()
         all_lons = pd.concat([df[pickup_lon_col], df[delivery_lon_col]]).dropna()
-        
         if all_lats.empty or all_lons.empty:
             print("Error: No valid coordinates found")
             return False
-            
         center_lat = all_lats.mean()
         center_lon = all_lons.mean()
 
@@ -233,10 +239,10 @@ def visualize_delivery_routes_on_map(
         # add routes for each row
         route_count = 0
         successful_routes = 0
-        
         for idx, row in df.iterrows():
             p_lat, p_lon = row[pickup_lat_col], row[pickup_lon_col]
             d_lat, d_lon = row[delivery_lat_col], row[delivery_lon_col]
+            predicted_time = row.get('Predicted_Delivery_Time') # Get predicted time for popup
 
             # skip rows with missing coordinates
             if pd.isna(p_lat) or pd.isna(p_lon) or pd.isna(d_lat) or pd.isna(d_lon):
@@ -249,202 +255,64 @@ def visualize_delivery_routes_on_map(
             if use_real_roads:
                 print(f"Fetching route {route_count} from OSRM...")
                 route_info = get_real_route_from_osrm(p_lon, p_lat, d_lon, d_lat)
-                time.sleep(0.1)  # Small delay to avoid overwhelming the API
+                time.sleep(0.1) # Small delay to avoid overwhelming the API
 
             # create popup text with route information
-            pickup_popup = create_enhanced_popup(row, popup_cols, route_info)
-            pickup_popup += f"<b>📍 Pickup:</b> ({p_lat:.4f}, {p_lon:.4f})"
-            
-            delivery_popup = create_enhanced_popup(row, popup_cols, route_info)
-            delivery_popup += f"<b>🎯 Delivery:</b> ({d_lat:.4f}, {d_lon:.4f})"
+            # Pass the predicted_time to the popup creation function
+            pickup_popup = create_enhanced_popup(row, popup_cols, route_info, predicted_time)
 
-            # add pickup marker (green)
+            # add pickup and drop markers
             folium.Marker(
                 location=[p_lat, p_lon],
                 popup=folium.Popup(pickup_popup, max_width=350),
-                icon=folium.Icon(color='green', icon='play', prefix='fa'),
-                tooltip=f"🚚 Pickup - Route {route_count}"
+                tooltip=f"Pickup for Order {row.get('Order_ID', idx+1)}",
+                icon=folium.Icon(color='green', icon='play')
             ).add_to(m)
 
-            # Add delivery marker (red)
             folium.Marker(
                 location=[d_lat, d_lon],
-                popup=folium.Popup(delivery_popup, max_width=350),
-                icon=folium.Icon(color='red', icon='stop', prefix='fa'),
-                tooltip=f"🏠 Delivery - Route {route_count}"
+                popup=folium.Popup(pickup_popup, max_width=350),
+                tooltip=f"Drop-off for Order {row.get('Order_ID', idx+1)}",
+                icon=folium.Icon(color='red', icon='stop')
             ).add_to(m)
 
-            # add route line
-            if route_info and route_info.get('geometry'):
-                # use real road geometry from OSRM
+            if route_info and route_info['geometry']:
+                # decode and add route polyline
                 route_coords = decode_polyline_to_coordinates(route_info['geometry'])
-                
                 folium.PolyLine(
                     locations=route_coords,
-                    color='#FF6B6B',
-                    weight=4,
-                    opacity=0.8,
-                    popup=folium.Popup(f"<b>Real Route {route_count}</b><br>" + 
-                                     create_enhanced_popup(row, popup_cols, route_info), 
-                                     max_width=350),
-                    tooltip=f"Route {route_count} - {route_info['distance_km']:.2f} km"
+                    color='blue',
+                    weight=5,
+                    opacity=0.7,
+                    tooltip=f"Route: {route_info['distance_km']:.2f} km"
                 ).add_to(m)
-                
-                # add waypoints if requested
-                if show_waypoints and len(route_coords) > 2:
-                    # add small markers for significant waypoints 
-                    step = max(1, len(route_coords) // 10)
-                    for i in range(step, len(route_coords) - step, step):
-                        folium.CircleMarker(
-                            location=route_coords[i],
-                            radius=3,
-                            popup=f"Waypoint {i // step}",
-                            color='orange',
-                            fill=True,
-                            fillColor='orange'
-                        ).add_to(m)
-                
                 successful_routes += 1
-            else:
-                # fallback to straight line if OSRM fails
+            elif not use_real_roads:
+                # simple straight line if not using real roads
                 folium.PolyLine(
                     locations=[[p_lat, p_lon], [d_lat, d_lon]],
-                    color='blue',
-                    weight=2.5,
-                    opacity=0.6,
-                    dash_array='5, 5',
-                    popup=folium.Popup(f"<b>Direct Route {route_count}</b><br>" + 
-                                     create_enhanced_popup(row, popup_cols), 
-                                     max_width=350),
-                    tooltip=f"Direct Route {route_count}"
-                ).add_to(m)
-
-        # add enhanced title and legend with full-width styling
-        title_html = f'''
-        <style>
-        .leaflet-container {{
-            width: 100% !important;
-            height: 100% !important;
-        }}
-        .folium-map {{
-            width: 100% !important;
-            height: 100% !important;
-        }}
-        </style>
-        <div style="position: fixed; top: 10px; left: 50%; transform: translateX(-50%); 
-                    width: 90%; z-index: 9999; background: rgba(255,255,255,0.9); 
-                    padding: 10px; border-radius: 10px; text-align: center; 
-                    box-shadow: 0 2px 6px rgba(0,0,0,0.3);">
-            <h3 style="margin: 0; color: #2E4057; font-size: 18px;">
-                <b>{map_title}</b>
-            </h3>
-            <p style="margin: 5px 0 0 0; font-size: 12px; color: #666;">
-                📍 {route_count} routes | ✅ {successful_routes} real road paths | 
-                🚚 Green: Pickup | 🏠 Red: Delivery
-            </p>
-        </div>
-        '''
-        m.get_root().html.add_child(folium.Element(title_html))
-
-        # add legend
-        legend_html = '''
-        <div style="position: fixed; bottom: 50px; right: 50px; width: 200px; height: 120px; 
-                    background: rgba(255,255,255,0.9); border: 2px solid grey; z-index: 9999; 
-                    font-size: 12px; padding: 10px; border-radius: 5px;">
-            <p style="margin: 0; font-weight: bold;">🗺️ Map Legend</p>
-            <p style="margin: 5px 0;"><span style="color: green;">●</span> Pickup Location</p>
-            <p style="margin: 5px 0;"><span style="color: red;">●</span> Delivery Location</p>
-            <p style="margin: 5px 0;"><span style="color: #FF6B6B;">━</span> Real Road Route</p>
-            <p style="margin: 5px 0;"><span style="color: blue;">╌</span> Direct Route</p>
-        </div>
-        '''
-        m.get_root().html.add_child(folium.Element(legend_html))
-
-        # save map
-        m.save(output_html_path)
-        print(f"✅ Route map saved successfully: {output_html_path}")
-        print(f"📊 Summary: {successful_routes}/{route_count} routes used real road data")
-        return True
-        
-    except Exception as e:
-        print(f"Error creating route map: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def visualize_multiple_deliveries_map(
-    df: pd.DataFrame,
-    depot_lat: float,
-    depot_lon: float,
-    delivery_lat_col: str,
-    delivery_lon_col: str,
-    popup_cols: List[str] = None,
-    zoom_start: int = 12,
-    map_title: str = "Multiple Delivery Optimization",
-    output_html_path: str = "outputs/multiple_deliveries_map.html"
-) -> bool:
-    """
-    Visualizes multiple delivery routes from a single depot/store location.
-    Useful for route optimization visualization.
-    """
-    try:
-        if df.empty:
-            print("Error: DataFrame is empty")
-            return False
-
-        # create output directory if it doesn't exist
-        os.makedirs(os.path.dirname(output_html_path), exist_ok=True)
-
-        # create map centered on depot
-        m = folium.Map(
-            location=[depot_lat, depot_lon], 
-            zoom_start=zoom_start,
-            control_scale=True,
-            tiles='OpenStreetMap'
-        )
-
-        # add depot marker
-        folium.Marker(
-            location=[depot_lat, depot_lon],
-            popup=f"<b>🏢 Depot/Store</b><br>Coordinates: ({depot_lat:.4f}, {depot_lon:.4f})",
-            icon=folium.Icon(color='black', icon='home', prefix='fa'),
-            tooltip="Main Depot"
-        ).add_to(m)
-
-        # add delivery routes
-        for idx, row in df.iterrows():
-            d_lat, d_lon = row[delivery_lat_col], row[delivery_lon_col]
-            
-            if pd.isna(d_lat) or pd.isna(d_lon):
-                continue
-
-            # get route information
-            route_info = get_real_route_from_osrm(depot_lon, depot_lat, d_lon, d_lat)
-            
-            # create popup
-            popup_text = create_enhanced_popup(row, popup_cols, route_info)
-            popup_text += f"<b>🎯 Delivery {idx + 1}:</b> ({d_lat:.4f}, {d_lon:.4f})"
-
-            # add delivery marker
-            folium.Marker(
-                location=[d_lat, d_lon],
-                popup=folium.Popup(popup_text, max_width=350),
-                icon=folium.Icon(color='red', icon='gift', prefix='fa'),
-                tooltip=f"Delivery {idx + 1}"
-            ).add_to(m)
-
-            # add route
-            if route_info and route_info.get('geometry'):
-                route_coords = decode_polyline_to_coordinates(route_info['geometry'])
-                folium.PolyLine(
-                    locations=route_coords,
-                    color=f'#{hash(str(idx)) % 16777216:06x}',  # Random color per route
+                    color='gray',
                     weight=3,
-                    opacity=0.7,
-                    popup=folium.Popup(f"Route to Delivery {idx + 1}", max_width=200)
+                    opacity=0.5,
+                    dash_array='5, 5',
+                    tooltip="Direct Line (OSRM disabled)"
                 ).add_to(m)
+                successful_routes += 1
+            else:
+                print(f"Could not get route for Order ID: {row.get('Order_ID', 'N/A')}. Displaying direct line.")
+                # Fallback to straight line if OSRM fails
+                folium.PolyLine(
+                    locations=[[p_lat, p_lon], [d_lat, d_lon]],
+                    color='orange',
+                    weight=3,
+                    opacity=0.5,
+                    dash_array='5, 5',
+                    tooltip="Direct Line (OSRM failed)"
+                ).add_to(m)
+                successful_routes += 1
 
-        # add title
+
+        # add title to the map
         title_html = f'''
         <h3 align="center" style="font-size:20px; margin-top:10px; color: #2E4057;">
             <b>{map_title}</b>
@@ -452,11 +320,15 @@ def visualize_multiple_deliveries_map(
         '''
         m.get_root().html.add_child(folium.Element(title_html))
 
-        m.save(output_html_path)
-        print(f"✅ Multiple delivery map saved: {output_html_path}")
-        return True
+        if successful_routes > 0:
+            # save map
+            m.save(output_html_path)
+            print(f"✅ Map with {successful_routes} routes saved successfully: {output_html_path}")
+            return True
+        else:
+            print("No successful routes to visualize.")
+            return False
         
     except Exception as e:
-        print(f"Error creating multiple delivery map: {e}")
+        print(f"Error creating delivery routes map: {e}")
         return False
-
