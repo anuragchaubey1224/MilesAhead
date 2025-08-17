@@ -19,8 +19,6 @@ sys.path.append(os.path.join(BASE_DIR, 'src', 'feature_engineering'))
 sys.path.append(os.path.join(BASE_DIR, 'src', 'model_training'))
 sys.path.append(os.path.join(BASE_DIR, 'src', 'map_components'))
 
-
-
 from feature_extraction import TemporalFeatures, UseRealDistance, TimeTakenFeature, DropRawColumns
 from outlier import OutlierRemover
 from encoding import ColumnStandardizer, ColumnDropper, EncodingTransformer
@@ -37,6 +35,14 @@ _model = None
 
 # OSRM API configuration
 OSRM_URL = "http://router.project-osrm.org/route/v1/driving/{},{};{},{}?overview=false"
+
+# Define vehicle speed limits (in km/hr)
+# These values can be adjusted based on real-world constraints and data.
+VEHICLE_SPEED_LIMITS = {
+    "motorcycle": 90,  # Max avg speed for motorcycle
+    "scooter": 60,     # Max avg speed for scooter
+    "bicycle": 30      # Max avg speed for bicycle
+}
 
 def get_real_distance_from_osrm(pickup_lon, pickup_lat, drop_lon, drop_lat):
     """
@@ -90,103 +96,139 @@ def load_inference_components():
         if os.path.exists(path):
             try:
                 _model = joblib.load(path)
-                print(f"Best tuned model ({model_name}) loaded.")
+                print(f"Best model ({model_name}) loaded from: {path}")
                 best_model_found = True
                 break
             except Exception as e:
-                print(f"Error loading {model_name} model: {e}")
-
+                print(f"Error loading model from {path}: {e}")
+    
     if not best_model_found:
-        print("Error: No tuned model found.")
-        _preprocessing_pipeline = None
+        print(f"Error: No best model found with prefix '{BEST_MODEL_PREFIX}' in {MODEL_DIR}")
         return False
-
+        
     return True
 
-def get_prediction(user_input_data: dict) -> tuple:
-    """preprocess and predict delivery time for a single input."""
+def get_prediction(user_input: dict):
+    """
+    gets real-time prediction and route visualization data based on user input.
+    """
     if not load_inference_components():
+        print("Failed to load inference components. Exiting.")
         return None, None
 
-    #  call OSRM API to get real distance
-    print("Fetching real distance from OSRM...")
-    real_distance = get_real_distance_from_osrm(
-        user_input_data['store_longitude'],
-        user_input_data['store_latitude'],
-        user_input_data['drop_longitude'],
-        user_input_data['drop_latitude']
-    )
-    
+    # fetch real distance using OSRM
+    pickup_lon = user_input['store_longitude']
+    pickup_lat = user_input['store_latitude']
+    drop_lon = user_input['drop_longitude']
+    drop_lat = user_input['drop_latitude']
+
+    real_distance = get_real_distance_from_osrm(pickup_lon, pickup_lat, drop_lon, drop_lat)
     if real_distance is None:
         print("Failed to get real distance. Prediction aborted.")
         return None, None
-    
+    user_input_data = user_input.copy()
     user_input_data['real_distance_km'] = real_distance
-    
-    #  create DataFrame and preprocess
+
+    # create DataFrame and preprocess
     expected_raw_columns = [
         'order_id', 'order_date', 'order_time', 'pickup_time',
-        'store_latitude', 'store_longitude',
-        'drop_latitude', 'drop_longitude',
-        'agent_age', 'agent_rating',
-        'traffic', 'weather', 'vehicle', 'area', 'category',
+        'store_latitude', 'store_longitude', 'drop_latitude', 'drop_longitude',
+        'agent_age', 'agent_rating', 'traffic', 'weather', 'vehicle', 'area', 'category',
         'real_distance_km'
     ]
-    
     input_df = pd.DataFrame([user_input_data])
     for col in expected_raw_columns:
         if col not in input_df.columns:
-            input_df[col] = pd.NA
+            input_df[col] = None # Ensure all expected columns are present, even if empty
 
-    input_df = input_df[expected_raw_columns]
-    input_df.columns = input_df.columns.str.lower()
-    
-    # domain validation
-    if pd.notna(input_df.at[0, 'agent_age']) and not 18 <= input_df.at[0, 'agent_age'] <= 60:
-        print(f"Warning: Agent age ({input_df.at[0, 'agent_age']}) is outside 18–60.")
-    if pd.notna(input_df.at[0, 'agent_rating']) and not 1 <= input_df.at[0, 'agent_rating'] <= 5:
-        print(f"Warning: Agent rating ({input_df.at[0, 'agent_rating']}) is outside 1–5.")
+    # convert time columns
+    input_df['Order_Date'] = pd.to_datetime(input_df['order_date'])
+    input_df['Order_Time'] = pd.to_datetime(input_df['order_time']).dt.time
+    input_df['Pickup_Time'] = pd.to_datetime(input_df['pickup_time']).dt.time
+    input_df['real_distance_km'] = input_df['real_distance_km'].astype(float)
 
-    data_for_map_viz = input_df[['order_id', 'store_latitude', 'store_longitude', 'drop_latitude', 'drop_longitude', 'real_distance_km']].copy()
 
+    # select features relevant for the model
+    # Ensure column names match the training data
+    input_df = input_df.rename(columns={
+        'store_latitude': 'Store_Latitude', 'store_longitude': 'Store_Longitude',
+        'drop_latitude': 'Drop_Latitude', 'drop_longitude': 'Drop_Longitude',
+        'agent_age': 'Agent_Age', 'agent_rating': 'Agent_Rating',
+        'traffic': 'Traffic', 'weather': 'Weather', 'vehicle': 'Vehicle',
+        'area': 'Area', 'category': 'Category',
+    })
+
+    # Apply preprocessing pipeline
     try:
-        processed_input = _preprocessing_pipeline.transform(input_df)
-        predicted_time = float(_model.predict(processed_input)[0])
-        data_for_map_viz['predicted_time'] = predicted_time
-        return predicted_time, data_for_map_viz
+        processed_input = _preprocessing_pipeline.transform(input_df.copy())
+        print("Input preprocessed successfully.")
     except Exception as e:
-        print(f"Error during prediction: {e}")
-        import traceback; traceback.print_exc()
+        print(f"Error during preprocessing: {e}")
         return None, None
 
-if __name__ == "__main__":
-    print("Running predict_evaluate.py in standalone mode.")
-    if not load_inference_components():
-        sys.exit(1)
+    # make prediction
+    try:
+        predicted_time = _model.predict(processed_input)[0]
+        # ensure prediction is not negative
+        predicted_time = max(0, predicted_time) 
+        print(f"Raw Predicted Delivery Time: {predicted_time:.2f} minutes")
 
-    sample_user_input = {
-        'order_id': 'PRED_001_JUL_24',
-        'order_date': '2025-07-24',
-        'order_time': '19:00:00',
-        'pickup_time': '19:10:00',
+        # --- Apply Speed Limit Logic ---
+        vehicle_type = user_input['vehicle']
+        if vehicle_type in VEHICLE_SPEED_LIMITS and real_distance > 0:
+            max_allowed_speed_kmph = VEHICLE_SPEED_LIMITS[vehicle_type]
+            implied_avg_speed_kmph = (real_distance / predicted_time) * 60 if predicted_time > 0 else float('inf')
+
+            if implied_avg_speed_kmph > max_allowed_speed_kmph:
+                # Calculate the minimum time required to not exceed the max speed
+                min_time_minutes = (real_distance / max_allowed_speed_kmph) * 60
+                predicted_time = max(predicted_time, min_time_minutes) # Use the higher of predicted or min_time
+                print(f"Adjusted predicted time for {vehicle_type} due to speed limit. New time: {predicted_time:.2f} minutes. Implied speed: {real_distance / (predicted_time / 60):.2f} km/hr (capped at {max_allowed_speed_kmph} km/hr)")
+            else:
+                print(f"Implied speed for {vehicle_type}: {implied_avg_speed_kmph:.2f} km/hr (within limits)")
+
+    except Exception as e:
+        print(f"Error during prediction: {e}")
+        return None, None
+
+    # prepare data for map visualization
+    map_data = pd.DataFrame([{
+        'Order_ID': user_input['order_id'],
+        'Store_Latitude': user_input['store_latitude'],
+        'Store_Longitude': user_input['store_longitude'],
+        'Drop_Latitude': user_input['drop_latitude'],
+        'Drop_Longitude': user_input['drop_longitude'],
+        'Predicted_Delivery_Time': predicted_time,
+        'Real_Distance_km': real_distance,
+        'Vehicle': user_input['vehicle'],
+        'Traffic': user_input['traffic'],
+        'Weather': user_input['weather']
+    }])
+    
+    return predicted_time, map_data
+
+if __name__ == '__main__':
+    # basic test
+    sample_input = {
+        'order_id': 'TEST_001',
+        'order_date': '2023-01-01',
+        'order_time': '10:00:00',
+        'pickup_time': '10:15:00',
         'store_latitude': 12.9716,
         'store_longitude': 77.5946,
-        'drop_latitude': 12.9279,
-        'drop_longitude': 77.6271,
-        'agent_age': 28,
-        'agent_rating': 4.7,
-        'traffic': 'High',
-        'weather': 'Cloudy',
-        'vehicle': 'Motorcycle',
+        'drop_latitude': 13.0000,
+        'drop_longitude': 77.6000,
+        'agent_age': 25,
+        'agent_rating': 4.8,
+        'traffic': 'Low',
+        'weather': 'Sunny',
+        'vehicle': 'motorcycle',
         'area': 'Urban',
         'category': 'Food'
     }
-    
-    predicted_delivery_time, map_data_df = get_prediction(sample_user_input)
-
-    if predicted_delivery_time is not None:
-        print(f"\nPredicted Delivery Time: {predicted_delivery_time:.2f} minutes")
-        print(map_data_df.head())
-
+    pred_time, map_df = get_prediction(sample_input)
+    if pred_time is not None:
+        print(f"\nPredicted Time for sample input: {pred_time:.2f} minutes")
+        print("Map Data:\n", map_df)
     else:
-        print("Prediction failed.")
+        print("\nPrediction failed for sample input.")

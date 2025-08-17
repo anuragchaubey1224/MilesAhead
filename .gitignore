@@ -31,7 +31,7 @@ models/
 # === Data Files ===
 data/raw/
 data/interim/
-data/processed/
+#data/processed/
 *.csv
 *.tsv
 *.xlsx

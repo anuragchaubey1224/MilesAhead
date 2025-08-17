@@ -608,15 +608,16 @@ def render_prediction_page():
             'agent_rating': agent_rating,
             'traffic': traffic,
             'weather': weather,
-            'vehicle': vehicle,
+            'vehicle': vehicle, # Pass vehicle type for speed limit
             'area': area,
             'category': category
         }
         
         # Show loading
         with st.spinner("🔮 Making prediction and fetching real-time route data..."):
+            # Get prediction and map data including vehicle type
             predicted_time, map_data_df = get_prediction(user_input)
-        
+
         if predicted_time is not None and map_data_df is not None:
             # Success display
             st.markdown(f"""
@@ -630,57 +631,45 @@ def render_prediction_page():
             # Additional metrics
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("📏 Real Distance", f"{map_data_df['real_distance_km'].iloc[0]:.2f} km")
+                st.metric("📏 Route Distance (km)", f"{map_data_df['Real_Distance_km'].iloc[0]:.2f}")
             with col2:
-                estimated_speed = (map_data_df['real_distance_km'].iloc[0] / predicted_time) * 60
-                st.metric("🏃 Avg Speed", f"{estimated_speed:.1f} km/h")
+                # Calculate implied average speed from predicted time and real distance
+                if predicted_time > 0:
+                    implied_speed = (map_data_df['Real_Distance_km'].iloc[0] / (predicted_time / 60))
+                    st.metric("⚡ Avg Speed (km/hr)", f"{implied_speed:.2f}")
+                else:
+                    st.metric("⚡ Avg Speed (km/hr)", "N/A")
             with col3:
-                delivery_cost = map_data_df['real_distance_km'].iloc[0] * 10  # ₹10 per km
-                st.metric("💰 Est. Cost", f"₹{delivery_cost:.0f}")
+                st.metric("🚗 Vehicle Type", map_data_df['Vehicle'].iloc[0])
+
+            st.markdown("---")
+            st.markdown("## 🗺️ Real-time Route Visualization")
             
-            # Route Visualization
-            st.markdown("## 🗺️ Real-Time Route Visualization")
-            
-            st.markdown("""
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                        padding: 1rem; border-radius: 10px; color: white; text-align: center; margin-bottom: 1rem;">
-                <h4>📍 Interactive Route Map with Real Road Paths</h4>
-                <p>Click on markers for detailed information • Real OSRM routing • Live distance calculation</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            map_output_path = "outputs/predicted_route.html"
-            
-            # Create enhanced map
-            success = visualize_delivery_routes_on_map(
+            # visualize route on map
+            map_output_path = "outputs/delivery_routes_map.html"
+            # Pass the predicted time for the popup
+            map_success = visualize_delivery_routes_on_map(
                 df=map_data_df,
-                pickup_lat_col='store_latitude',
-                pickup_lon_col='store_longitude',
-                delivery_lat_col='drop_latitude',
-                delivery_lon_col='drop_longitude',
-                popup_cols=['order_id', 'predicted_time', 'real_distance_km'],
-                map_title=f"🚚 Predicted Route: {order_id} ({predicted_time:.1f} min)",
+                pickup_lat_col='Store_Latitude',
+                pickup_lon_col='Store_Longitude',
+                delivery_lat_col='Drop_Latitude',
+                delivery_lon_col='Drop_Longitude',
+                popup_cols=[
+                    'Order_ID', 'Vehicle', 'Traffic', 'Weather', 'Real_Distance_km'
+                ], # Only OSRM distance, not time. Predicted time passed separately.
+                map_title=f"Delivery Route for Order ID: {order_id}",
                 output_html_path=map_output_path,
                 use_real_roads=True,
                 show_waypoints=True
             )
             
-            if success:
+            if map_success:
                 try:
-                    with open(map_output_path, 'r', encoding='utf-8') as f:
+                    with open(map_output_path, 'r') as f:
                         map_html = f.read()
                     
-                    # Display the map with full width and increased height
-                    st.markdown("### 🗺️ Interactive Route Map")
-                    st.markdown("""
-                    <style>
-                    .element-container iframe {
-                        width: 100% !important;
-                        max-width: 100% !important;
-                    }
-                    </style>
-                    """, unsafe_allow_html=True)
-                    st.components.v1.html(map_html, height=800, width=None, scrolling=False)
+                    # Embed the map in Streamlit with full width and increased height
+                    st.components.v1.html(map_html, width=1000, height=800, scrolling=True) 
                     
                     # Download and additional options
                     col1, col2, col3 = st.columns(3)
@@ -699,17 +688,16 @@ def render_prediction_page():
                     with col3:
                         if st.button("📊 Analyze This Route", use_container_width=True, key="analyze_route_btn"):
                             st.info("Route analysis: This prediction considers real-world factors for maximum accuracy!")
-                    
                 except FileNotFoundError:
                     st.error("❌ Map file not found. Please check the 'outputs' directory.")
+                except Exception as e:
+                    st.error(f"❌ An error occurred while displaying the map: {e}")
             else:
                 st.error("❌ Failed to generate route visualization.")
-            
+
             # Prediction Insights
             st.markdown("## 📊 Prediction Insights")
-            
             col1, col2 = st.columns(2)
-            
             with col1:
                 st.markdown("### 🔍 Input Summary")
                 insights_data = {
@@ -720,59 +708,170 @@ def render_prediction_page():
                     "Order Type": f"📦 {category}",
                     "Agent Experience": f"👤 Age {agent_age}, Rating {agent_rating}/5"
                 }
-                
                 for key, value in insights_data.items():
                     st.write(f"**{key}:** {value}")
-            
             with col2:
                 st.markdown("### ⚡ Quick Actions")
-                
-                if st.button("🔄 Predict Another Route", use_container_width=True, key="sidebar_predict_btn"):
+                if st.button("🔄 Predict Another Route", use_container_width=True, key="sidebar_predict_btn_bottom"): # Unique key
                     st.experimental_rerun()
-                
                 if st.button("📊 View Historical Data", use_container_width=True, key="sidebar_eda_btn"):
                     st.info("Navigate to EDA Analysis page to explore historical patterns")
-                
                 if st.button("📈 Business Insights", use_container_width=True, key="sidebar_insights_btn"):
                     st.info("Navigate to Business Insights for strategic analytics")
-        
         else:
             st.error("❌ Prediction failed. Please check your inputs and try again.")
+
+# --- Page: Business Insights ---
+def render_insights_page():
+    """Render business insights and analytics page"""
+    st.markdown("# 📈 Business Insights & Analytics")
+    df = load_data()
+    if df is None:
+        return
+
+    st.markdown("""
+    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 1.5rem; border-radius: 15px; color: white; text-align: center; margin-bottom: 2rem;">
+        <h3>💼 Strategic Business Analytics</h3>
+        <p>Actionable insights for optimizing delivery operations and improving customer experience</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Key Metrics Dashboard
+    st.markdown("## 🎯 Key Performance Indicators")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        avg_delivery = df['Delivery_Time'].mean()
+        st.metric("⏱️ Avg Delivery Time", f"{avg_delivery:.1f} min")
+    with col2:
+        if 'real_distance_km' in df.columns:
+            avg_distance = df['real_distance_km'].mean()
+            st.metric("📏 Avg Distance", f"{avg_distance:.1f} km")
+    with col3:
+        agent_satisfaction = df['Agent_Rating'].mean()
+        st.metric("👤 Agent Rating", f"{agent_satisfaction:.2f}/5")
+    with col4:
+        total_orders = len(df)
+        st.metric("📦 Total Orders", f"{total_orders:,}")
+
+    # performance by Category
+    st.markdown("## 📊 Performance by Category")
+    category_performance = df.groupby('Category')['Delivery_Time'].mean().sort_values()
+    fig_cat_perf = px.bar(
+        x=category_performance.index,
+        y=category_performance.values,
+        title="Average Delivery Time by Category",
+        color=category_performance.values,
+        color_continuous_scale='plotly3'
+    )
+    fig_cat_perf.update_layout(height=400)
+    st.plotly_chart(fig_cat_perf, use_container_width=True)
+
+    # Agent Performance
+    st.markdown("## 👤 Agent Performance Analysis")
+    col1, col2 = st.columns(2)
+    with col1:
+        agent_age_impact = df.groupby('Agent_Age')['Delivery_Time'].mean()
+        fig_age = px.line(
+            x=agent_age_impact.index,
+            y=agent_age_impact.values,
+            title="Avg Delivery Time by Agent Age",
+            markers=True
+        )
+        fig_age.update_layout(height=400)
+        st.plotly_chart(fig_age, use_container_width=True)
+    with col2:
+        agent_rating_impact = df.groupby('Agent_Rating')['Delivery_Time'].mean()
+        fig_rating = px.bar(
+            x=agent_rating_impact.index,
+            y=agent_rating_impact.values,
+            title="Avg Delivery Time by Agent Rating",
+            color=agent_rating_impact.values,
+            color_continuous_scale='Plasma' # Corrected colorscale
+        )
+        fig_rating.update_layout(height=400)
+        st.plotly_chart(fig_rating, use_container_width=True)
+
+    # Impact of External Factors
+    st.markdown("## 🌧️🚦 Impact of External Factors")
+    col1, col2 = st.columns(2)
+    with col1:
+        traffic_impact = df.groupby('Traffic')['Delivery_Time'].mean().sort_values(ascending=False)
+        fig_traffic = px.bar(
+            x=traffic_impact.index,
+            y=traffic_impact.values,
+            title="Delivery Time by Traffic Condition",
+            color=traffic_impact.values,
+            color_continuous_scale='Reds' # Corrected colorscale
+        )
+        fig_traffic.update_layout(height=400)
+        st.plotly_chart(fig_traffic, use_container_width=True)
+    with col2:
+        weather_impact = df.groupby('Weather')['Delivery_Time'].mean().sort_values(ascending=False)
+        fig_weather = px.bar(
+            x=weather_impact.index,
+            y=weather_impact.values,
+            title="Delivery Time by Weather Condition",
+            color=weather_impact.values,
+            color_continuous_scale='Blues' # Corrected colorscale
+        )
+        fig_weather.update_layout(height=400)
+        st.plotly_chart(fig_weather, use_container_width=True)
+
+    # Time-based Analysis
+    st.markdown("## ⏰ Time-based Insights")
+    # Extract hour from order time
+    df['Order_Hour'] = pd.to_datetime(df['Order_Time']).dt.hour
+    hourly_patterns = df.groupby('Order_Hour').agg({
+        'Delivery_Time': 'mean',
+        'Order_ID': 'count'
+    }).reset_index()
+    hourly_patterns.columns = ['Hour', 'Avg_Delivery_Time', 'Order_Count']
+
+    fig_hourly = make_subplots(specs=[[{"secondary_y": True}]])
+    fig_hourly.add_trace(
+        go.Bar(x=hourly_patterns['Hour'], y=hourly_patterns['Order_Count'], name="Order Count", marker_color='#764ba2'),
+        secondary_y=False,
+    )
+    fig_hourly.add_trace(
+        go.Scatter(x=hourly_patterns['Hour'], y=hourly_patterns['Avg_Delivery_Time'], name="Avg Delivery Time", mode='lines+markers', line=dict(color='#667eea', width=3)),
+        secondary_y=True,
+    )
+    fig_hourly.update_layout(
+        title_text="Hourly Order Volume and Average Delivery Time",
+        xaxis_title="Hour of Day",
+        height=500
+    )
+    fig_hourly.update_yaxes(title_text="Order Count", secondary_y=False)
+    fig_hourly.update_yaxes(title_text="Avg Delivery Time (min)", secondary_y=True)
+    st.plotly_chart(fig_hourly, use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("### 💡 Actionable Recommendations")
+    st.info("""
+    - **Optimize Agent Allocation:** Identify peak hours and areas with high delivery times to strategically deploy more agents or offer incentives during these periods.
+    - **Dynamic Pricing:** Implement dynamic pricing based on predicted delivery times and traffic conditions to manage customer expectations and demand.
+    - **Route Optimization:** Leverage real-time traffic data and OSRM integration to dynamically adjust routes, minimizing delays.
+    - **Vehicle Type Analysis:** Analyze performance across vehicle types to understand efficiency and operational costs, potentially adjusting fleet composition.
+    - **Weather Preparedness:** Develop contingency plans for adverse weather conditions, including surge pricing or service area adjustments.
+    """)
 
 # --- Page: About ---
 def render_about_page():
     """Render comprehensive about page with app details, accuracy, and links"""
     st.markdown("# ℹ️ About MilesAhead")
-    
     st.markdown("""
     <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                padding: 2rem; border-radius: 15px; color: white; text-align: center; margin-bottom: 2rem;">
-        <h2>🚚 MilesAhead - Smart Delivery Analytics Platform</h2>
-        <p style="font-size: 1.2rem;">AI-Powered Delivery Time Prediction & Route Optimization</p>
+                padding: 1.5rem; border-radius: 15px; color: white; text-align: center; margin-bottom: 2rem;">
+        <h3>✨ Unlocking Efficiency in Logistics</h3>
+        <p>MilesAhead is an advanced Machine Learning-powered platform designed to revolutionize delivery operations. By predicting delivery times with high accuracy and visualizing optimal routes, we help businesses improve efficiency, reduce costs, and enhance customer satisfaction.</p>
     </div>
     """, unsafe_allow_html=True)
-    
-    # App Overview
-    st.markdown("## 🎯 Project Overview")
-    
-    col1, col2 = st.columns([2, 1])
-    
+
+    col1, col2 = st.columns(2)
     with col1:
         st.markdown("""
-        **MilesAhead** is an advanced delivery analytics platform that leverages machine learning and real-world data to optimize delivery operations. Our system provides accurate delivery time predictions and visualizes optimal routes using real road networks.
-        
-        ### Key Features:
-        - **🧠 AI-Powered Predictions**: Machine learning models trained on 40,000+ delivery records
-        - **🗺️ Real-World Routing**: Integration with OSRM API for actual road paths
-        - **📊 Comprehensive Analytics**: Deep insights into delivery patterns and performance
-        - **📱 Interactive Interface**: Modern web application with responsive design
-        - **📈 Business Intelligence**: Strategic recommendations for operational optimization
-        """)
-    
-    with col2:
-        st.markdown("""
-        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; 
-                    padding: 1.5rem; border-radius: 15px; text-align: center;">
+        <div style="background: linear-gradient(145deg, #2d3436, #636e72); 
+                    color: white; padding: 2rem; border-radius: 15px; text-align: center;">
             <h3>🏆 Model Performance</h3>
             <h1 style="color: #00b894; margin: 10px 0;">84.2%</h1>
             <p><strong>R² Score Accuracy</strong></p>
@@ -782,16 +881,27 @@ def render_about_page():
             <p><strong>XGBoost</strong><br>Best Model</p>
         </div>
         """, unsafe_allow_html=True)
-    
+    with col2:
+        st.markdown("""
+        <div style="background: linear-gradient(145deg, #2d3436, #636e72); 
+                    color: white; padding: 2rem; border-radius: 15px; text-align: center;">
+            <h3>💡 Core Features</h3>
+            <ul style="list-style-type: none; padding: 0;">
+                <li style="margin-bottom: 10px;">✅ Real-time ETA Predictions</li>
+                <li style="margin-bottom: 10px;">✅ OSRM-powered Route Visualization</li>
+                <li style="margin-bottom: 10px;">✅ Interactive EDA Dashboards</li>
+                <li style="margin-bottom: 10px;">✅ Key Business Insights</li>
+                <li style="margin-bottom: 10px;">✅ Scalable ML Pipeline</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+
     # Technical Details
     st.markdown("## 🔧 Technical Architecture")
-    
     col1, col2, col3 = st.columns(3)
-    
     with col1:
         st.markdown("""
-        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; 
-                    padding: 1.5rem; border-radius: 15px; margin: 10px 0;">
+        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; padding: 1.5rem; border-radius: 15px; margin: 10px 0;">
             <h4>🧠 Machine Learning</h4>
             <ul>
                 <li><strong>XGBoost Regressor</strong> - Primary model</li>
@@ -802,11 +912,9 @@ def render_about_page():
             </ul>
         </div>
         """, unsafe_allow_html=True)
-    
     with col2:
         st.markdown("""
-        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; 
-                    padding: 1.5rem; border-radius: 15px; margin: 10px 0;">
+        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; padding: 1.5rem; border-radius: 15px; margin: 10px 0;">
             <h4>🗺️ Route Optimization</h4>
             <ul>
                 <li><strong>OSRM API</strong> integration</li>
@@ -817,11 +925,9 @@ def render_about_page():
             </ul>
         </div>
         """, unsafe_allow_html=True)
-    
     with col3:
         st.markdown("""
-        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; 
-                    padding: 1.5rem; border-radius: 15px; margin: 10px 0;">
+        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; padding: 1.5rem; border-radius: 15px; margin: 10px 0;">
             <h4>📊 Data Pipeline</h4>
             <ul>
                 <li><strong>Streamlit</strong> web framework</li>
@@ -833,72 +939,12 @@ def render_about_page():
         </div>
         """, unsafe_allow_html=True)
     
-    # Model Accuracy & Performance
-    st.markdown("## 📈 Model Accuracy & Performance")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("""
-        ### 🎯 Performance Metrics
-        
-        Our machine learning model has been rigorously trained and validated to ensure high accuracy:
-        
-        - **R² Score: 84.2%** - Explains 84.2% of variance in delivery times
-        - **Mean Absolute Error: < 8 minutes** - Average prediction error
-        - **Root Mean Square Error: < 12 minutes** - Overall prediction accuracy
-        - **Cross-validation Score: 83.8%** - Consistent performance across data splits
-        
-        ### 🔍 Model Features
-        
-        The model considers 17 key factors:
-        - **Geographic**: Store & delivery coordinates, real distance
-        - **Temporal**: Order time, pickup time, date patterns
-        - **Environmental**: Weather conditions, traffic levels
-        - **Operational**: Vehicle type, area type, order category
-        - **Agent**: Age, rating, experience level
-        """)
-    
-    with col2:
-        # Create a simple accuracy visualization
-        import plotly.graph_objects as go
-        
-        metrics = ['R² Score', 'Cross-Validation', 'Feature Importance', 'Prediction Speed']
-        values = [84.2, 83.8, 91.5, 95.0]
-        
-        fig = go.Figure(data=go.Scatterpolar(
-            r=values,
-            theta=metrics,
-            fill='toself',
-            name='Model Performance'
-        ))
-        
-        fig.update_layout(
-            polar=dict(
-                radialaxis=dict(
-                    visible=True,
-                    range=[0, 100]
-                )),
-            showlegend=False,
-            title="Model Performance Radar",
-            height=400,
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            font_color='white',
-            title_font_color='white'
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Future Enhancements
-    st.markdown("## 🚀 Future Enhancements")
-    
+    # Future Improvements
+    st.markdown("## 🚀 Future Improvements")
     col1, col2, col3 = st.columns(3)
-    
     with col1:
         st.markdown("""
-        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; 
-                    padding: 1.5rem; border-radius: 15px; margin: 10px 0;">
+        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; padding: 1.5rem; border-radius: 15px; margin: 10px 0;">
             <h4>🔮 AI Improvements</h4>
             <ul>
                 <li>Deep Learning models</li>
@@ -909,11 +955,9 @@ def render_about_page():
             </ul>
         </div>
         """, unsafe_allow_html=True)
-    
     with col2:
         st.markdown("""
-        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; 
-                    padding: 1.5rem; border-radius: 15px; margin: 10px 0;">
+        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; padding: 1.5rem; border-radius: 15px; margin: 10px 0;">
             <h4>📱 Platform Features</h4>
             <ul>
                 <li>Mobile application</li>
@@ -924,11 +968,9 @@ def render_about_page():
             </ul>
         </div>
         """, unsafe_allow_html=True)
-    
     with col3:
         st.markdown("""
-        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; 
-                    padding: 1.5rem; border-radius: 15px; margin: 10px 0;">
+        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; padding: 1.5rem; border-radius: 15px; margin: 10px 0;">
             <h4>🏢 Business Intelligence</h4>
             <ul>
                 <li>Advanced analytics dashboard</li>
@@ -939,91 +981,47 @@ def render_about_page():
             </ul>
         </div>
         """, unsafe_allow_html=True)
-    
+
     # Developer & Links Section
     st.markdown("## 👨‍💻 Developer & Links")
-    
     col1, col2 = st.columns([1, 1])
-    
     with col1:
         st.markdown("""
-        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; 
-                    padding: 2rem; border-radius: 15px; text-align: center;">
+        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; padding: 2rem; border-radius: 15px; text-align: center;">
             <h3>👨‍💻 Built by</h3>
             <h2 style="color: #00b894;">Anurag Chaubey</h2>
             <hr style="border-color: #667eea;">
             <p>Passionate about AI, Machine Learning, and building intelligent systems that solve real-world problems.</p>
         </div>
         """, unsafe_allow_html=True)
-    
     with col2:
         st.markdown("""
-        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; 
-                    padding: 2rem; border-radius: 15px;">
+        <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; padding: 2rem; border-radius: 15px;">
             <h3>🔗 Project Links</h3>
             <div style="margin: 15px 0;">
-                <a href="https://github.com/anuragchaubey1224/MilesAhead" target="_blank" 
-                   style="color: #00b894; text-decoration: none; font-size: 1.1rem;">
-                    🔗 GitHub Repository
+                <a href="https://github.com/anuragchaubey1224/MilesAhead-ML-Based-Delivery-Time-Prediction-and-Route-Optimization" target="_blank" style="text-decoration: none; color: white;">
+                    <button style="background-color: #667eea; color: white; padding: 10px 20px; border-radius: 5px; border: none; font-size: 1rem; cursor: pointer; width: 100%;">
+                        GitHub Repository
+                    </button>
                 </a>
             </div>
             <div style="margin: 15px 0;">
-                <a href="https://www.linkedin.com/in/anurag-chaubey-63202a297/" target="_blank" 
-                   style="color: #00b894; text-decoration: none; font-size: 1.1rem;">
-                    💼 LinkedIn Profile
-                </a>
-            </div>
-            <div style="margin: 15px 0;">
-                <a href="mailto:xxxxxx@gmail.com" 
-                   style="color: #00b894; text-decoration: none; font-size: 1.1rem;">
-                    📧 Contact Email
-                </a>
-            </div>
-            <div style="margin: 15px 0;">
-                <a href="https://github.com/anuragchaubey1224" target="_blank" 
-                   style="color: #00b894; text-decoration: none; font-size: 1.1rem;">
-                    🌟 More Projects
+                <a href="https://linkedin.com/in/anurag-chaubey-ml" target="_blank" style="text-decoration: none; color: white;">
+                    <button style="background-color: #667eea; color: white; padding: 10px 20px; border-radius: 5px; border: none; font-size: 1rem; cursor: pointer; width: 100%;">
+                        Connect on LinkedIn
+                    </button>
                 </a>
             </div>
         </div>
         """, unsafe_allow_html=True)
     
-    # Technology Stack
-    st.markdown("## 🛠️ Technology Stack")
-    
-    st.markdown("""
-    <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; 
-                padding: 2rem; border-radius: 15px; margin: 20px 0;">
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
-            <div>
-                <h4>🧠 Machine Learning</h4>
-                <p>• XGBoost<br>• Scikit-learn<br>• Pandas<br>• NumPy</p>
-            </div>
-            <div>
-                <h4>🌐 Web Framework</h4>
-                <p>• Streamlit<br>• HTML/CSS<br>• JavaScript<br>• Plotly</p>
-            </div>
-            <div>
-                <h4>🗺️ Mapping & APIs</h4>
-                <p>• OSRM API<br>• Folium<br>• OpenStreetMap<br>• Leaflet.js</p>
-            </div>
-            <div>
-                <h4>📊 Data Visualization</h4>
-                <p>• Plotly Express<br>• Matplotlib<br>• Seaborn<br>• Interactive Charts</p>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
     # Acknowledgments
-    st.markdown("## 🙏 Acknowledgments")
-    
+    st.markdown("##  Acknowledgments")
     st.markdown("""
-    <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; 
-                padding: 1.5rem; border-radius: 15px; margin: 20px 0;">
-        <h4>Special Thanks To:</h4>
+    <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; padding: 1.5rem; border-radius: 15px; margin: 20px 0;">
+        <p>This project leverages the power of several open-source tools and platforms. We extend our gratitude to:</p>
         <ul>
-            <li><strong>OSRM Project</strong> - For providing free routing services</li>
+            <li><strong>Project OSRM</strong> - For providing free routing services</li>
             <li><strong>OpenStreetMap</strong> - For open geographic data</li>
             <li><strong>Streamlit Team</strong> - For the amazing web framework</li>
             <li><strong>Plotly</strong> - For interactive visualization tools</li>
@@ -1031,17 +1029,13 @@ def render_about_page():
         </ul>
     </div>
     """, unsafe_allow_html=True)
-    
+
     # License and Usage
     st.markdown("## 📄 License & Usage")
-    
     st.markdown("""
-    <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; 
-                padding: 1.5rem; border-radius: 15px; margin: 20px 0;">
+    <div style="background: linear-gradient(145deg, #2d3436, #636e72); color: white; padding: 1.5rem; border-radius: 15px; margin: 20px 0;">
         <p><strong>This project is open source and available under the MIT License.</strong></p>
-        <p>Feel free to use, modify, and distribute this code for educational and commercial purposes. 
-        Attribution to the original author is appreciated.</p>
-        
+        <p>Feel free to use, modify, and distribute this code for educational and commercial purposes. Attribution to the original author is appreciated.</p>
         <h4>🚀 How to Use This Project:</h4>
         <ol>
             <li>Clone the repository from GitHub</li>
@@ -1050,268 +1044,15 @@ def render_about_page():
             <li>Train the model with your data</li>
             <li>Deploy the Streamlit application</li>
         </ol>
-        
         <p><em>For detailed setup instructions, please refer to the README.md file in the GitHub repository.</em></p>
     </div>
     """, unsafe_allow_html=True)
 
-# --- Page: Business Insights ---
-def render_insights_page():
-    """Render business insights and analytics page"""
-    st.markdown("# 📈 Business Insights & Analytics")
-    
-    df = load_data()
-    if df is None:
-        return
-    
-    st.markdown("""
-    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                padding: 1.5rem; border-radius: 15px; color: white; text-align: center; margin-bottom: 2rem;">
-        <h3>💼 Strategic Business Analytics</h3>
-        <p>Actionable insights for optimizing delivery operations and improving customer experience</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Key Metrics Dashboard
-    st.markdown("## 🎯 Key Performance Indicators")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        avg_delivery = df['Delivery_Time'].mean()
-        st.metric("⏱️ Avg Delivery Time", f"{avg_delivery:.1f} min")
-    
-    with col2:
-        if 'real_distance_km' in df.columns:
-            avg_distance = df['real_distance_km'].mean()
-            st.metric("📏 Avg Distance", f"{avg_distance:.1f} km")
-    
-    with col3:
-        agent_satisfaction = df['Agent_Rating'].mean()
-        st.metric("👤 Agent Rating", f"{agent_satisfaction:.2f}/5")
-    
-    with col4:
-        total_orders = len(df)
-        st.metric("📦 Total Orders", f"{total_orders:,}")
-    
-    # performance by Category
-    st.markdown("## 📊 Performance by Category")
-    
-    category_performance = df.groupby('Category').agg({
-        'Delivery_Time': ['mean', 'count'],
-        'Agent_Rating': 'mean'
-    }).round(2)
-    
-    category_performance.columns = ['Avg_Delivery_Time', 'Order_Count', 'Avg_Agent_Rating']
-    category_performance = category_performance.reset_index()
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig_cat_time = px.bar(
-            category_performance,
-            x='Category',
-            y='Avg_Delivery_Time',
-            title="Average Delivery Time by Category",
-            color='Avg_Delivery_Time',
-            color_continuous_scale='viridis'
-        )
-        fig_cat_time.update_layout(
-            height=400,
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            font_color='white',
-            title_font_color='white'
-        )
-        st.plotly_chart(fig_cat_time, use_container_width=True)
-    
-    with col2:
-        fig_cat_volume = px.pie(
-            category_performance,
-            values='Order_Count',
-            names='Category',
-            title="Order Volume by Category"
-        )
-        fig_cat_volume.update_layout(
-            height=400,
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            font_color='white',
-            title_font_color='white'
-        )
-        st.plotly_chart(fig_cat_volume, use_container_width=True)
-    
-    # Traffic and Weather Impact
-    st.markdown("## 🚦 Operational Factors Analysis")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        traffic_impact = df.groupby('Traffic')['Delivery_Time'].mean().sort_values(ascending=False)
-        fig_traffic = px.bar(
-            x=traffic_impact.index,
-            y=traffic_impact.values,
-            title="Delivery Time by Traffic Condition",
-            color=traffic_impact.values,
-            color_continuous_scale='reds'
-        )
-        fig_traffic.update_layout(
-            height=400,
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            font_color='white',
-            title_font_color='white'
-        )
-        st.plotly_chart(fig_traffic, use_container_width=True)
-    
-    with col2:
-        weather_impact = df.groupby('Weather')['Delivery_Time'].mean().sort_values(ascending=False)
-        fig_weather = px.bar(
-            x=weather_impact.index,
-            y=weather_impact.values,
-            title="Delivery Time by Weather Condition",
-            color=weather_impact.values,
-            color_continuous_scale='blues'
-        )
-        fig_weather.update_layout(
-            height=400,
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            font_color='white',
-            title_font_color='white'
-        )
-        st.plotly_chart(fig_weather, use_container_width=True)
-    
-    # Time-based Analysis
-    st.markdown("## ⏰ Time-based Insights")
-    
-    # Extract hour from order time
-    df['Order_Hour'] = pd.to_datetime(df['Order_Time']).dt.hour
-    hourly_patterns = df.groupby('Order_Hour').agg({
-        'Delivery_Time': 'mean',
-        'Order_ID': 'count'
-    }).reset_index()
-    hourly_patterns.columns = ['Hour', 'Avg_Delivery_Time', 'Order_Count']
-    
-    fig_hourly = make_subplots(
-        rows=2, cols=1,
-        subplot_titles=("Average Delivery Time by Hour", "Order Volume by Hour"),
-        vertical_spacing=0.12
-    )
-    
-    fig_hourly.add_trace(
-        go.Scatter(
-            x=hourly_patterns['Hour'],
-            y=hourly_patterns['Avg_Delivery_Time'],
-            mode='lines+markers',
-            name='Avg Delivery Time',
-            line=dict(color='#667eea', width=3)
-        ),
-        row=1, col=1
-    )
-    
-    fig_hourly.add_trace(
-        go.Bar(
-            x=hourly_patterns['Hour'],
-            y=hourly_patterns['Order_Count'],
-            name='Order Count',
-            marker_color='#764ba2'
-        ),
-        row=2, col=1
-    )
-    
-    fig_hourly.update_layout(
-        height=600, 
-        showlegend=False,
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        font_color='white',
-        title_font_color='white'
-    )
-    fig_hourly.update_xaxes(title_text="Hour of Day", row=2, col=1)
-    fig_hourly.update_yaxes(title_text="Delivery Time (min)", row=1, col=1)
-    fig_hourly.update_yaxes(title_text="Number of Orders", row=2, col=1)
-    
-    st.plotly_chart(fig_hourly, use_container_width=True)
-    
-    # recommendations
-    st.markdown("## 💡 Strategic Recommendations")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("""
-        <div class="eda-section">
-            <h4>🎯 Operational Optimization</h4>
-            <ul>
-                <li><strong>Peak Hours:</strong> Increase agent allocation during high-demand hours</li>
-                <li><strong>Traffic Management:</strong> Route optimization during jam conditions</li>
-                <li><strong>Weather Contingency:</strong> Prepare for stormy weather delays</li>
-                <li><strong>Category Focus:</strong> Prioritize high-volume categories</li>
-            </ul>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown("""
-        <div class="eda-section">
-            <h4>📊 Performance Improvements</h4>
-            <ul>
-                <li><strong>Agent Training:</strong> Focus on improving ratings below 4.0</li>
-                <li><strong>Route Planning:</strong> Implement real-time route optimization</li>
-                <li><strong>Customer Communication:</strong> Proactive delivery time updates</li>
-                <li><strong>Technology Integration:</strong> Enhanced prediction accuracy</li>
-            </ul>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # export Options
-    st.markdown("## 📥 Export Analytics")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if st.button("📊 Download Performance Report", use_container_width=True, key="perf_report_btn"):
-            report_data = category_performance.to_csv(index=False)
-            st.download_button(
-                label="📥 Download CSV",
-                data=report_data,
-                file_name="performance_report.csv",
-                mime="text/csv",
-                key="download_perf_btn"
-            )
-    
-    with col2:
-        if st.button("⏰ Download Hourly Analysis", use_container_width=True, key="hourly_analysis_btn"):
-            hourly_data = hourly_patterns.to_csv(index=False)
-            st.download_button(
-                label="📥 Download CSV",
-                data=hourly_data,
-                file_name="hourly_analysis.csv",
-                mime="text/csv",
-                key="download_hourly_btn"
-            )
-    
-    with col3:
-        if st.button("🚦 Download Factor Analysis", use_container_width=True, key="factor_analysis_btn"):
-            factor_analysis = df.groupby(['Traffic', 'Weather'])['Delivery_Time'].mean().reset_index()
-            factor_data = factor_analysis.to_csv(index=False)
-            st.download_button(
-                label="📥 Download CSV",
-                data=factor_data,
-                file_name="factor_analysis.csv",
-                mime="text/csv",
-                key="download_factor_btn"
-            )
 
-# --- Main Application ---
-def main():
-    """Main application function"""
-    
-    # render sidebar and get selected page
+# --- Main Application Logic ---
+if __name__ == "__main__":
     selected_page = render_sidebar()
-    
-    # render the selected page
+
     if selected_page == "🏠 Home":
         render_home_page()
     elif selected_page == "📊 EDA Analysis":
@@ -1322,15 +1063,3 @@ def main():
         render_insights_page()
     elif selected_page == "ℹ️ About":
         render_about_page()
-    
-    # footer
-    st.markdown("---")
-    st.markdown("""
-    <div style="text-align: center; color: #666; padding: 1rem;">
-        <p>🚚 <strong>MilesAhead</strong> - Smart Delivery ETA & Route Optimization Platform</p>
-        <p>Powered by Streamlit & Machine Learning | Real-time routing via OSRM API</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-if __name__ == "__main__":
-    main()
